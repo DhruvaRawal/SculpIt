@@ -1,108 +1,144 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
 public class LineDrawer : MonoBehaviour
 {
-    public LineRenderer lineRenderer;
-    public float lineWidth = 0.1f; // Thickness of the tube
-    private List<Vector3> points = new List<Vector3>();
-    private Vector3 currentPosition = Vector3.zero;
-    private Vector3 lastPosition = Vector3.zero;
+    [Header("Settings")]
+    public float lineWidth = 0.02f;
+    public float minDistance = 0.01f;
+
+    [Header("References")]
+    public Transform rightHandAnchor;
+    public GameObject linePrefab;
+
+    private List<List<Vector3>> allLines = new();
+    private List<Vector3> currentLine = null;
+    private LineRenderer activeRenderer = null;
     private bool drawing = false;
 
     void Start()
     {
-        lineRenderer = GetComponent<LineRenderer>();
-        if (lineRenderer == null)
+        if (rightHandAnchor == null)
         {
-            Debug.LogError("No LineRenderer found! Add one to the GameObject.");
-            return;
-        }
-
-        lineRenderer.positionCount = 0;
-        lineRenderer.startWidth = lineWidth;
-        lineRenderer.endWidth = lineWidth;
-        points.Add(currentPosition);
-        UpdateLine();
-    }
-
-    void Update()
-    {
-        // Get controller position
-        Vector3 controllerPosition = OVRInput.GetLocalControllerPosition(OVRInput.Controller.RTouch);
-
-        // Start/Stop Drawing with 'A' Button
-        if (OVRInput.GetDown(OVRInput.Button.One)) // A Button on Right Controller
-        {
-            drawing = !drawing; // Toggle drawing mode
-            Debug.Log("Drawing Mode: " + drawing);
-        }
-
-        // Export with 'B' Button
-        if (OVRInput.GetDown(OVRInput.Button.Two)) // B Button on Right Controller
-        {
-            ExportMesh();
-        }
-
-        // Move Drawing Position Based on Controller
-        if (drawing)
-        {
-            currentPosition = controllerPosition;
-
-            if (currentPosition != lastPosition)
+            rightHandAnchor = GameObject.Find("RightHandAnchor")?.transform;
+            if (rightHandAnchor == null)
             {
-                AddPoint();
-                lastPosition = currentPosition;
+                Debug.LogError("RightHandAnchor not found. Assign it manually.");
+                enabled = false;
+                return;
             }
         }
     }
 
-    void AddPoint()
+    void Update()
     {
-        points.Add(currentPosition);
-        UpdateLine();
-    }
-
-    void UpdateLine()
-    {
-        lineRenderer.positionCount = points.Count;
-        lineRenderer.SetPositions(points.ToArray());
-    }
-
-    void ExportMesh()
-    {
-        Mesh mesh = ConvertToMesh();
-        if (mesh != null)
+        // Toggle drawing with A
+        if (OVRInput.GetDown(OVRInput.Button.One))
         {
-            SaveMeshAsOBJ(mesh, "ExportedMesh");
+            drawing = !drawing;
+            Debug.Log("Drawing mode: " + drawing);
+
+            if (drawing)
+                StartNewLine();
+            else
+                FinishCurrentLine();
+        }
+
+        // Export with B
+        if (OVRInput.GetDown(OVRInput.Button.Two))
+        {
+            ExportAllMeshes();
+        }
+
+        if (drawing && rightHandAnchor != null && activeRenderer != null)
+        {
+            Vector3 pos = rightHandAnchor.position;
+
+            if (currentLine.Count == 0 || Vector3.Distance(currentLine[^1], pos) > minDistance)
+            {
+                currentLine.Add(pos);
+                UpdateActiveLine();
+            }
         }
     }
 
-    Mesh ConvertToMesh()
+    void StartNewLine()
     {
-        if (points.Count < 2)
+        if (linePrefab == null)
         {
-            Debug.LogError("Not enough points to form a 3D object.");
-            return null;
+            Debug.LogError("Line Prefab not assigned!");
+            return;
         }
 
-        GameObject meshObject = new GameObject("GeneratedMesh");
-        MeshFilter meshFilter = meshObject.AddComponent<MeshFilter>();
-        MeshRenderer meshRenderer = meshObject.AddComponent<MeshRenderer>();
-        meshRenderer.material = new Material(Shader.Find("Standard"));
+        GameObject newLine = Instantiate(linePrefab, transform);
+        activeRenderer = newLine.GetComponent<LineRenderer>();
 
+        if (activeRenderer == null)
+        {
+            Debug.LogError("Line prefab must have a LineRenderer!");
+            return;
+        }
+
+        activeRenderer.positionCount = 0;
+        activeRenderer.startWidth = lineWidth;
+        activeRenderer.endWidth = lineWidth;
+        activeRenderer.useWorldSpace = true;
+
+        currentLine = new List<Vector3>();
+        allLines.Add(currentLine);
+    }
+
+    void FinishCurrentLine()
+    {
+        activeRenderer = null;
+        currentLine = null;
+    }
+
+    void UpdateActiveLine()
+    {
+        if (activeRenderer != null && currentLine != null)
+        {
+            activeRenderer.positionCount = currentLine.Count;
+            activeRenderer.SetPositions(currentLine.ToArray());
+        }
+    }
+
+    // ---------- EXPORT ----------
+    void ExportAllMeshes()
+    {
+        if (allLines.Count == 0)
+        {
+            Debug.LogWarning("No lines to export!");
+            return;
+        }
+
+        List<Mesh> meshes = new();
+        foreach (var line in allLines)
+        {
+            if (line.Count >= 2)
+                meshes.Add(ConvertLineToMesh(line));
+        }
+
+        Mesh combined = CombineMeshes(meshes);
+        SaveMeshAsOBJ(combined, "ExportedDrawing");
+
+        Debug.Log("Export complete! All lines merged into one OBJ file.");
+    }
+
+    Mesh ConvertLineToMesh(List<Vector3> points)
+    {
         Mesh mesh = new Mesh();
-        List<Vector3> vertices = new List<Vector3>();
-        List<int> triangles = new List<int>();
+
+        List<Vector3> vertices = new();
+        List<int> triangles = new();
 
         float radius = lineWidth / 2f;
-        int segments = 20;
+        int segments = 12;
 
         for (int i = 0; i < points.Count; i++)
         {
             Vector3 forward = Vector3.zero;
-
             if (i > 0)
                 forward = (points[i] - points[i - 1]).normalized;
             else if (i < points.Count - 1)
@@ -149,34 +185,44 @@ public class LineDrawer : MonoBehaviour
         mesh.triangles = triangles.ToArray();
         mesh.RecalculateNormals();
 
-        meshFilter.mesh = mesh;
-
         return mesh;
+    }
+
+    Mesh CombineMeshes(List<Mesh> meshes)
+    {
+        List<CombineInstance> combine = new();
+
+        foreach (var m in meshes)
+        {
+            CombineInstance ci = new();
+            ci.mesh = m;
+            ci.transform = Matrix4x4.identity;
+            combine.Add(ci);
+        }
+
+        Mesh combined = new Mesh();
+        combined.CombineMeshes(combine.ToArray(), true, false);
+        return combined;
     }
 
     void SaveMeshAsOBJ(Mesh mesh, string fileName)
     {
         string path = Path.Combine(Application.persistentDataPath, fileName + ".obj");
-        using (StreamWriter writer = new StreamWriter(path))
+
+        using (StreamWriter writer = new StreamWriter(path, false, System.Text.Encoding.ASCII))
         {
-            writer.WriteLine("# Exported from Unity");
+            writer.WriteLine("# Exported from Unity LineDrawer");
 
-            // Write vertices
-            foreach (Vector3 vertex in mesh.vertices)
-            {
-                writer.WriteLine($"v {vertex.x} {vertex.y} {vertex.z}");
-            }
+            foreach (Vector3 v in mesh.vertices)
+                writer.WriteLine($"v {v.x} {v.y} {v.z}");
 
-            // Write faces (OBJ indices start from 1, so we add +1)
-            for (int i = 0; i < mesh.triangles.Length; i += 3)
+            int[] triangles = mesh.triangles;
+            for (int i = 0; i < triangles.Length; i += 3)
             {
-                int v1 = mesh.triangles[i] + 1;
-                int v2 = mesh.triangles[i + 1] + 1;
-                int v3 = mesh.triangles[i + 2] + 1;
-                writer.WriteLine($"f {v1} {v2} {v3}");
+                writer.WriteLine($"f {triangles[i] + 1} {triangles[i + 1] + 1} {triangles[i + 2] + 1}");
             }
         }
 
-        Debug.Log("Mesh saved to: " + path);
+        Debug.Log($"Saved OBJ to: {path}");
     }
 }
