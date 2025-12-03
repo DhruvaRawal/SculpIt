@@ -3,8 +3,10 @@ SculpIt is a VR application built in Unity that lets users draw freely in 3D spa
 Your creations are automatically converted into 3D meshes and can be exported as .obj files, making them ready to import into Blender or other 3D modeling software.
 
 Key Mappings:
+
     For VR: A- Start / Stop drawing
             B- Export all to .obj
+            
     For Keyboard: B- Start / Stop drawing
                   N- Export all to .obj
 
